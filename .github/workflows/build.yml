@@ -1,0 +1,113 @@
+name: Build Tico Limiter
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install cmake
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release -j$(sysctl -n hw.ncpu)
+
+      - name: Create macOS installer
+        run: |
+          mkdir -p installer/mac
+          # Copy plugins
+          cp -R build/TicoLimiter_artefacts/Release/VST3/Tico\ Limiter.vst3 installer/mac/
+          cp -R build/TicoLimiter_artefacts/Release/AU/Tico\ Limiter.component installer/mac/
+          # Create install script
+          cat > installer/mac/Install.command << 'EOF'
+          #!/bin/bash
+          echo "Installing Tico Limiter..."
+          mkdir -p ~/Library/Audio/Plug-Ins/VST3
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "Tico Limiter.vst3" ~/Library/Audio/Plug-Ins/VST3/
+          cp -R "Tico Limiter.component" ~/Library/Audio/Plug-Ins/Components/
+          echo "Done! Tico Limiter installed."
+          echo "  VST3: ~/Library/Audio/Plug-Ins/VST3/Tico Limiter.vst3"
+          echo "  AU:   ~/Library/Audio/Plug-Ins/Components/Tico Limiter.component"
+          read -p "Press any key to exit..."
+          EOF
+          chmod +x installer/mac/Install.command
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TicoLimiter-macOS
+          path: installer/mac/
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+
+      - name: Create Windows installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path installer/win
+          # Copy plugins
+          Copy-Item -Recurse "build/TicoLimiter_artefacts/Release/VST3/Tico Limiter.vst3" installer/win/
+          Copy-Item -Recurse "build/TicoLimiter_artefacts/Release/Standalone/Tico Limiter.exe" installer/win/ -ErrorAction SilentlyContinue
+          # Create install script
+          @'
+          @echo off
+          echo Installing Tico Limiter...
+          set VST3_DIR=%COMMONPROGRAMFILES%\VST3
+          if not exist "%VST3_DIR%" mkdir "%VST3_DIR%"
+          xcopy /E /Y "Tico Limiter.vst3" "%VST3_DIR%\Tico Limiter.vst3\"
+          echo.
+          echo Done! Tico Limiter installed to:
+          echo   %VST3_DIR%\Tico Limiter.vst3
+          echo.
+          pause
+          '@ | Out-File -Encoding ASCII installer/win/Install.bat
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TicoLimiter-Windows
+          path: installer/win/
+
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Package macOS
+        run: |
+          cd TicoLimiter-macOS
+          zip -r ../TicoLimiter-macOS.zip .
+
+      - name: Package Windows
+        run: |
+          cd TicoLimiter-Windows
+          zip -r ../TicoLimiter-Windows.zip .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            TicoLimiter-macOS.zip
+            TicoLimiter-Windows.zip
+          generate_release_notes: true
