@@ -173,7 +173,7 @@ TicoLimiterEditor::TicoLimiterEditor(TicoLimiterProcessor& processor)
     setupHint(mAutoReleaseHint, "Adaptive release time");
 
     // OS combo - no separate label, ComboBox shows text
-    mOSCombo.addItemList({"2x", "4x", "8x", "16x", "32x", "64x"}, 1);
+    mOSCombo.addItemList({"2x", "4x", "8x", "16x", "32x", "64x", "128x", "256x", "512x", "1024x", "2048x"}, 1);
     mOSCombo.setSelectedItemIndex(1, juce::dontSendNotification); // default 4x
     addAndMakeVisible(mOSCombo);
     mOSAtt = std::make_unique<CA>(mProcessor.getParameters(), "oversampling", mOSCombo);

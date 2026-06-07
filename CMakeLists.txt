@@ -30,7 +30,7 @@ juce_add_plugin(TicoLimiter
     COPY_PLUGIN_AFTER_BUILD TRUE
     PLUGIN_MANUFACTURER_CODE KwAu
     PLUGIN_CODE LmDc
-    FORMATS AU VST3 AAX Standalone
+    FORMATS AU VST3 Standalone
     PRODUCT_NAME "Tico Limiter"
     VST3_CATEGORIES "Fx" "Dynamics"
     AU_MAIN_TYPE "kAudioUnitType_Effect"
@@ -78,6 +78,7 @@ target_compile_definitions(TicoLimiter
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
         JUCE_DISPLAY_SPLASH_SCREEN=0
+        $<$<CXX_COMPILER_ID:MSVC>:_USE_MATH_DEFINES>
 )
 
 # Set deployment target for macOS

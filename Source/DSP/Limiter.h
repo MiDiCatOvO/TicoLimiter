@@ -7,13 +7,12 @@
 
 namespace dsp {
 
-// Transparent look-ahead feed-forward limiter
-// - Feed-forward design ensures flat frequency response
-// - Look-ahead prevents transient overshoot
-// - Attack bound to look-ahead: gain reaches target exactly when peak emerges from delay
-// - Dual-stage release (fast + slow) for natural sound
-// - Auto-release adapts to signal dynamics
-// - O(1) amortized min tracking via monotonic deque with sequence numbers
+// L2-style look-ahead feed-forward limiter
+// - Instant attack via look-ahead window
+// - Ultra-fast adaptive release with hold for maximum loudness
+// - Dual-speed release: fast (5ms) for transients, slow (50ms) for sustained
+// - Release speed adapts to GR depth and user setting
+// - O(1) amortized min tracking via monotonic deque
 class LookAheadLimiter {
 public:
     LookAheadLimiter() = default;
@@ -22,15 +21,16 @@ public:
         mSampleRate = static_cast<float>(sampleRate);
         applyLookAheadMs(mLookAheadMs);
 
-        // Dual-stage release
-        mFastReleaseCoeff = calculateTimeCoeff(30.0f);
-        mSlowReleaseCoeff = calculateTimeCoeff(300.0f);
+        // L2-style release: much faster than before
+        mFastReleaseCoeff = calculateTimeCoeff(5.0f);   // 5ms — snappy
+        mSlowReleaseCoeff = calculateTimeCoeff(50.0f);   // 50ms — still fast
         mManualReleaseCoeff = calculateTimeCoeff(100.0f);
 
         mCurrentGain = 1.0f;
         mAppliedGain = 1.0f;
 
         mSequence = 0;
+        mHoldCounter = 0;
         mMinDeque.clear();
     }
 
@@ -41,6 +41,7 @@ public:
         mCurrentGain = 1.0f;
         mAppliedGain = 1.0f;
         mSequence = 0;
+        mHoldCounter = 0;
         mMinDeque.clear();
     }
 
@@ -76,7 +77,7 @@ public:
     void processSample(float& left, float& right) {
         float peak = std::max(std::abs(left), std::abs(right));
 
-        // Instantaneous target gain for this sample
+        // Instantaneous target gain
         float targetGain = 1.0f;
         if (peak > mThresholdLinear) {
             targetGain = mThresholdLinear / peak;
@@ -88,53 +89,67 @@ public:
         mDelayBufferL[mDelayWriteIdx] = left;
         mDelayBufferR[mDelayWriteIdx] = right;
 
-        // Track RAW target gain in monotonic deque — find the minimum
-        // over the look-ahead window. This is what prevents transient overshoot:
-        // we attenuate based on the loudest peak in the window, not just the current sample.
+        // Track raw target gain in monotonic deque
         while (!mMinDeque.empty() && mMinDeque.back().gain > targetGain)
             mMinDeque.pop_back();
         mMinDeque.push_back({mSequence, targetGain});
 
-        // Remove entries that fell outside the look-ahead window.
         size_t cutoff = (mSequence >= mLookAheadSize) ? (mSequence - mLookAheadSize + 1) : 0;
         while (!mMinDeque.empty() && mMinDeque.front().sequence < cutoff)
             mMinDeque.pop_front();
 
-        // The windowed minimum — this is the actual gain the limiter should apply
         float windowedGain = mMinDeque.empty() ? 1.0f : mMinDeque.front().gain;
 
-        // Release smoothing (instant attack, smoothed release)
-        float releaseCoeff;
-        if (mAutoRelease) {
-            // Adaptive: GR depth drives fast↔slow, user release knob sets the base.
-            // Higher release → base closer to fast (snappier recovery)
-            // Lower release → base closer to slow (natural, smooth recovery)
-            float grDepth = std::clamp(1.0f - mCurrentGain, 0.0f, 1.0f);
-            mAutoBlend += 0.001f * (grDepth - mAutoBlend);
-            float userNorm = std::clamp((mManualReleaseCoeff - 0.998f) / (0.9999f - 0.998f), 0.0f, 1.0f);
-            float base = mSlowReleaseCoeff + userNorm * (mFastReleaseCoeff - mSlowReleaseCoeff);
-            releaseCoeff = base + mAutoBlend * (mSlowReleaseCoeff - base);
+        // === L2-style gain control ===
+
+        // Instant attack: snap to the windowed minimum immediately
+        if (windowedGain < mCurrentGain) {
+            mCurrentGain = windowedGain;
+            // Reset hold counter — keep gain low for a few samples
+            // This prevents the gain from bouncing back too quickly on transients
+            mHoldCounter = mHoldSamples;
         } else {
-            releaseCoeff = mManualReleaseCoeff;
+            // Release phase
+            if (mHoldCounter > 0) {
+                // Hold: keep gain at minimum briefly before releasing
+                mHoldCounter--;
+                // Don't change mCurrentGain during hold
+            } else {
+                // Adaptive release: blend fast and slow based on GR depth + user setting
+                float releaseCoeff;
+
+                if (mAutoRelease) {
+                    // GR depth: deeper GR → use slow release to avoid pumping
+                    float grDepth = std::clamp(1.0f - mCurrentGain, 0.0f, 1.0f);
+
+                    // Smooth the GR depth to avoid jitter
+                    mAutoBlend += 0.005f * (grDepth - mAutoBlend);
+
+                    // User release knob maps to the fast release speed
+                    // Higher release value → faster release → more aggressive loudness
+                    float userNorm = std::clamp((mManualReleaseCoeff - 0.998f) / (0.9999f - 0.998f), 0.0f, 1.0f);
+
+                    // Fast component: driven by user setting (higher = faster)
+                    float fastCoeff = mSlowReleaseCoeff + userNorm * (mFastReleaseCoeff - mSlowReleaseCoeff);
+
+                    // Blend: deep GR → slow release, shallow GR → fast release
+                    releaseCoeff = fastCoeff + mAutoBlend * (mSlowReleaseCoeff - fastCoeff);
+                } else {
+                    releaseCoeff = mManualReleaseCoeff;
+                }
+
+                mCurrentGain = windowedGain + releaseCoeff * (mCurrentGain - windowedGain);
+            }
         }
 
-        // Instant attack when gain needs to decrease, smoothed release when it increases
-        if (windowedGain < mCurrentGain)
-            mCurrentGain = windowedGain; // instant attack
-        else
-            mCurrentGain = windowedGain + releaseCoeff * (mCurrentGain - windowedGain); // smoothed release
-
-        // Read delayed sample and apply the smoothed windowed gain
+        // Read delayed sample and apply gain
         size_t delayReadIdx = mDelayWriteIdx;
         left  = mDelayBufferL[delayReadIdx] * mCurrentGain;
         right = mDelayBufferR[delayReadIdx] * mCurrentGain;
 
         mAppliedGain = mCurrentGain;
 
-        // Safety hard clamp — guarantees output never exceeds threshold.
-        // Catches edge cases where the look-ahead window is too short to
-        // fully pre-attenuate a transient, or when upstream processing
-        // (soft clipper mix) lets peaks through.
+        // Safety hard clamp
         {
             float outPeak = std::max(std::abs(left), std::abs(right));
             if (outPeak > mThresholdLinear) {
@@ -172,14 +187,11 @@ private:
             return;
         }
 
-        // Grow buffer if needed (never shrink) — preserves existing content
         if (newSize > mDelayBufferL.size()) {
             mDelayBufferL.resize(newSize, 0.0f);
             mDelayBufferR.resize(newSize, 0.0f);
         }
 
-        // Only change the window size — do NOT reset indices, sequence, or deque
-        // This allows seamless transition without audio discontinuities
         mLookAheadSize = newSize;
     }
 
@@ -197,12 +209,16 @@ private:
     float mLookAheadMs = 5.0f;
     float mThresholdLinear = 1.0f;
 
-    // Dual-stage release
-    float mFastReleaseCoeff = 0.99f;    // ~30ms
-    float mSlowReleaseCoeff = 0.9998f;  // ~300ms
+    // L2-style fast release
+    float mFastReleaseCoeff = 0.99f;    // ~5ms
+    float mSlowReleaseCoeff = 0.999f;   // ~50ms
     float mManualReleaseCoeff = 0.999f; // user-set value
     bool mAutoRelease = false;
-    float mAutoBlend = 0.0f;            // smoothed blend factor
+    float mAutoBlend = 0.0f;
+
+    // Gain hold — prevents premature gain recovery on transients
+    static constexpr int mHoldSamples = 8; // ~0.17ms at 48kHz
+    int mHoldCounter = 0;
 
     float mCurrentGain = 1.0f;
     float mAppliedGain = 1.0f;

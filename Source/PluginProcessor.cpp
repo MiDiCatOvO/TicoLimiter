@@ -72,7 +72,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout TicoLimiterProcessor::create
         juce::StringArray{ "1:2", "1:3", "1:5", "1:8" }, 1));
     params.push_back(std::make_unique<juce::AudioParameterChoice>(
         juce::ParameterID{"oversampling", 1}, "Oversampling",
-        juce::StringArray{ "2x", "4x", "8x", "16x", "32x", "64x" }, 1));
+        juce::StringArray{ "2x", "4x", "8x", "16x", "32x", "64x", "128x", "256x", "512x", "1024x", "2048x" }, 1));
     params.push_back(std::make_unique<juce::AudioParameterChoice>(
         juce::ParameterID{"sampleRate", 1}, "Sample Rate",
         juce::StringArray{ "44100", "48000", "88200", "96000" }, 1));
@@ -130,15 +130,24 @@ void TicoLimiterProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     mOversampler8x  = std::make_unique<juce::dsp::Oversampling<float>>(2, 3, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR);
     mOversampler16x = std::make_unique<juce::dsp::Oversampling<float>>(2, 4, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR);
     mOversampler32x = std::make_unique<juce::dsp::Oversampling<float>>(2, 5, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR);
-    mOversampler64x = std::make_unique<juce::dsp::Oversampling<float>>(2, 6, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR);
+    mOversampler64x   = std::make_unique<juce::dsp::Oversampling<float>>(2, 6,  juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR);
+    mOversampler128x  = std::make_unique<juce::dsp::Oversampling<float>>(2, 7,  juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR);
+    mOversampler256x  = std::make_unique<juce::dsp::Oversampling<float>>(2, 8,  juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR);
+    mOversampler512x  = std::make_unique<juce::dsp::Oversampling<float>>(2, 9,  juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR);
+    mOversampler1024x = std::make_unique<juce::dsp::Oversampling<float>>(2, 10, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR);
+    mOversampler2048x = std::make_unique<juce::dsp::Oversampling<float>>(2, 11, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR);
 
-    juce::dsp::ProcessSpec spec{ sampleRate, static_cast<juce::uint32>(samplesPerBlock), 2 };
     mOversampler2x->initProcessing(samplesPerBlock);
     mOversampler4x->initProcessing(samplesPerBlock);
     mOversampler8x->initProcessing(samplesPerBlock);
     mOversampler16x->initProcessing(samplesPerBlock);
     mOversampler32x->initProcessing(samplesPerBlock);
     mOversampler64x->initProcessing(samplesPerBlock);
+    mOversampler128x->initProcessing(samplesPerBlock);
+    mOversampler256x->initProcessing(samplesPerBlock);
+    mOversampler512x->initProcessing(samplesPerBlock);
+    mOversampler1024x->initProcessing(samplesPerBlock);
+    mOversampler2048x->initProcessing(samplesPerBlock);
 
     prepareLimiter();
 
@@ -162,6 +171,11 @@ void TicoLimiterProcessor::releaseResources() {
     mOversampler16x.reset();
     mOversampler32x.reset();
     mOversampler64x.reset();
+    mOversampler128x.reset();
+    mOversampler256x.reset();
+    mOversampler512x.reset();
+    mOversampler1024x.reset();
+    mOversampler2048x.reset();
 }
 
 void TicoLimiterProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) {
@@ -337,9 +351,14 @@ void TicoLimiterProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
             case 0: os = mOversampler2x.get();  break;
             case 1: os = mOversampler4x.get();  break;
             case 2: os = mOversampler8x.get();  break;
-            case 3: os = mOversampler16x.get(); break;
-            case 4: os = mOversampler32x.get(); break;
-            default: os = mOversampler64x.get(); break;
+            case 3: os = mOversampler16x.get();  break;
+            case 4: os = mOversampler32x.get();  break;
+            case 5: os = mOversampler64x.get();   break;
+            case 6: os = mOversampler128x.get();  break;
+            case 7: os = mOversampler256x.get();  break;
+            case 8: os = mOversampler512x.get();  break;
+            case 9: os = mOversampler1024x.get(); break;
+            default: os = mOversampler2048x.get(); break;
         }
 
         if (os != nullptr) {
@@ -377,8 +396,8 @@ void TicoLimiterProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
 
                     if (linkedPeak > clipperThreshold) {
                         float overRatio = linkedPeak / clipperThreshold;
-                        // Soft knee: smooth transition at threshold
-                        float kneeBlend = std::tanh((overRatio - 1.0f) * 10.0f);
+                        // Hard knee: near-instant transition
+                        float kneeBlend = std::tanh((overRatio - 1.0f) * 30.0f);
 
                         // Linked gain: attenuate excess by clipperCoeff
                         float linkedGain = 1.0f + kneeBlend * (std::pow(overRatio, -clipperCoeff) - 1.0f);
@@ -387,14 +406,14 @@ void TicoLimiterProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::
                         float gainL = linkedGain;
                         if (absL > clipperThreshold) {
                             float overL = absL / clipperThreshold;
-                            float kneeL = std::tanh((overL - 1.0f) * 10.0f);
+                            float kneeL = std::tanh((overL - 1.0f) * 30.0f);
                             gainL = 1.0f + kneeL * (std::pow(overL, -clipperCoeff) - 1.0f);
                         }
 
                         float gainR = linkedGain;
                         if (absR > clipperThreshold) {
                             float overR = absR / clipperThreshold;
-                            float kneeR = std::tanh((overR - 1.0f) * 10.0f);
+                            float kneeR = std::tanh((overR - 1.0f) * 30.0f);
                             gainR = 1.0f + kneeR * (std::pow(overR, -clipperCoeff) - 1.0f);
                         }
 

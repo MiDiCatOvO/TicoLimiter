@@ -79,6 +79,11 @@ private:
     std::unique_ptr<juce::dsp::Oversampling<float>> mOversampler16x;
     std::unique_ptr<juce::dsp::Oversampling<float>> mOversampler32x;
     std::unique_ptr<juce::dsp::Oversampling<float>> mOversampler64x;
+    std::unique_ptr<juce::dsp::Oversampling<float>> mOversampler128x;
+    std::unique_ptr<juce::dsp::Oversampling<float>> mOversampler256x;
+    std::unique_ptr<juce::dsp::Oversampling<float>> mOversampler512x;
+    std::unique_ptr<juce::dsp::Oversampling<float>> mOversampler1024x;
+    std::unique_ptr<juce::dsp::Oversampling<float>> mOversampler2048x;
 
     // Parameters
     std::atomic<float>* mReleaseParam = nullptr;
